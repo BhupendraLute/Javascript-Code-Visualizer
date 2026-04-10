@@ -105,7 +105,7 @@ function App() {
         <div className="right-panel">
           <CallStack callStack={currentSnapshot.callStack} />
           <WebAPIs apis={currentSnapshot.webAPIs} />
-          <DOMView onSimulateClick={handleSimulateClick} />
+          {code.includes('document.') && <DOMView onSimulateClick={handleSimulateClick} />}
           <TaskQueues 
             macrotasks={currentSnapshot.macrotaskQueue} 
             microtasks={currentSnapshot.microtaskQueue} 
