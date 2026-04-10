@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { EditorView, CallStack, WebAPIs, TaskQueues, Controls, ConsoleView, DOMView, MemoryView } from './components';
 import { CodeVisualizerEngine } from './engine/Interpreter';
-import { Code2 } from 'lucide-react';
+import { Code2, BookOpen } from 'lucide-react';
+import { EXAMPLES } from './constants/examples';
 import './index.css';
 
 const DEFAULT_CODE = `console.log('1. Script Start');
@@ -83,11 +84,31 @@ function App() {
     setCurrentIndex(0);
   };
 
+  const handleExampleChange = (e) => {
+    const exampleId = e.target.value;
+    const example = EXAMPLES.find(ex => ex.id === exampleId);
+    if (example) {
+       setCode(example.code);
+       handleReset();
+    }
+  };
+
   return (
     <div className="app-container">
       <header className="header">
-        <Code2 size={28} color="#60a5fa" />
-        <h1>JavaScript Visualizer</h1>
+        <div className="header-brand">
+          <Code2 size={28} color="#60a5fa" />
+          <h1>JavaScript Visualizer</h1>
+        </div>
+        
+        <div className="playground-selector">
+          <BookOpen size={16} color="#94a3b8" />
+          <select onChange={handleExampleChange} className="example-select">
+            {EXAMPLES.map(ex => (
+              <option key={ex.id} value={ex.id}>{ex.name}</option>
+            ))}
+          </select>
+        </div>
       </header>
 
       <Controls 
