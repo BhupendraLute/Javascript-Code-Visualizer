@@ -1,22 +1,18 @@
 import React, { useState, useRef } from 'react';
-import { EditorView, CallStack, WebAPIs, TaskQueues, Controls, ConsoleView, DOMView } from './components';
+import { EditorView, CallStack, WebAPIs, TaskQueues, Controls, ConsoleView, DOMView, MemoryView } from './components';
 import { CodeVisualizerEngine } from './engine/Interpreter';
 import { Code2 } from 'lucide-react';
 import './index.css';
 
-const DEFAULT_CODE = `console.log('1. Script start');
-
-// Simulate DOM interaction
-const btn = document.getElementById('btn');
-btn.addEventListener('click', () => {
-  console.log('Button Clicked! (DOM Event)');
-});
-
-fetch('https://api.example.com/data').then(() => {
-  console.log('Fetch request completed!');
-});
-
-console.log('2. Script end');
+const DEFAULT_CODE = `const globalVar = 'I am global';
+function outer(outerArg) {
+  const closedOver = 'secret';
+  return function inner(innerArg) {
+     console.log(globalVar, outerArg, closedOver, innerArg);
+  }
+}
+const fn = outer('arg1');
+fn('arg2');
 `;
 
 function App() {
@@ -90,6 +86,7 @@ function App() {
         canPrev={currentIndex > 0}
         currentIndex={currentIndex}
         totalSteps={snapshots.length}
+        actionText={currentSnapshot.contextName}
       />
 
       <div className="main-content">
@@ -105,6 +102,7 @@ function App() {
         <div className="right-panel">
           <CallStack callStack={currentSnapshot.callStack} />
           <WebAPIs apis={currentSnapshot.webAPIs} />
+          <MemoryView memory={currentSnapshot.memory} />
           {code.includes('document.') && <DOMView onSimulateClick={handleSimulateClick} />}
           <TaskQueues 
             macrotasks={currentSnapshot.macrotaskQueue} 

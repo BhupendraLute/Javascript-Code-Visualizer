@@ -5,3 +5,4 @@ export { TaskQueues } from './TaskQueues';
 export { Controls } from './Controls';
 export { ConsoleView } from './ConsoleView';
 export { DOMView } from './DOMView';
+export { MemoryView } from './MemoryView';
