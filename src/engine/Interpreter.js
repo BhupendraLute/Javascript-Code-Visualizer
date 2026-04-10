@@ -1,0 +1,246 @@
+import { Environment } from './Environment';
+import { parse } from 'acorn';
+
+export class CodeVisualizerEngine {
+  constructor(code) {
+    this.code = code;
+    this.snapshots = [];
+    this.callStack = [];
+    this.webAPIs = [];
+    this.macrotaskQueue = [];
+    this.microtaskQueue = [];
+    this.consoleLogs = [];
+    this.globalEnv = new Environment();
+    this.nextTimerId = 1;
+    this.currentTime = 0;
+
+    this.setupBuiltIns();
+
+    try {
+      this.ast = parse(code, { ecmaVersion: 2020, locations: true });
+    } catch (e) {
+      this.ast = null;
+      this.error = e;
+    }
+  }
+
+  setupBuiltIns() {
+    this.globalEnv.set('console', {
+      log: (...args) => {
+        const text = args.map(a => String(a?.value !== undefined ? a.value : a)).join(' ');
+        this.consoleLogs.push(text);
+      }
+    });
+
+    this.globalEnv.set('setTimeout', (cb, ms) => {
+      const id = this.nextTimerId++;
+      const timeMs = ms?.value || 0;
+      
+      this.webAPIs.push({
+        id,
+        name: `setTimeout (cb, ${timeMs}ms)`,
+        triggerTime: this.currentTime + timeMs,
+        callback: cb
+      });
+      
+      return { value: id, type: 'number' };
+    });
+
+    this.globalEnv.set('Promise', {
+      resolve: (val) => {
+        return {
+          type: 'Promise',
+          value: val,
+          then: (cb) => {
+             this.microtaskQueue.push({
+               type: 'Microtask (then)',
+               callback: cb,
+               arg: val
+             });
+             return this.globalEnv.get('Promise').resolve(val);
+          }
+        };
+      }
+    });
+  }
+
+  recordSnapshot(node, contextName = 'Global') {
+    if (!node) return;
+    this.snapshots.push({
+      line: node.loc ? node.loc.start.line : null,
+      callStack: JSON.parse(JSON.stringify(this.callStack)),
+      webAPIs: JSON.parse(JSON.stringify(this.webAPIs.map(api => api.name))),
+      macrotaskQueue: JSON.parse(JSON.stringify(this.macrotaskQueue.map(m => m.name || m.type))),
+      microtaskQueue: JSON.parse(JSON.stringify(this.microtaskQueue.map(m => m.name || m.type))),
+      console: [...this.consoleLogs],
+      contextName
+    });
+  }
+
+  run() {
+    if (!this.ast) return [];
+
+    this.callStack.push({ name: 'main()', state: 'running' });
+    this.macrotaskQueue.push({ type: 'script', name: 'script', node: this.ast, env: this.globalEnv });
+
+    let loopCount = 0;
+
+    // Event Loop Simulation
+    while ((this.macrotaskQueue.length > 0 || this.microtaskQueue.length > 0 || this.webAPIs.length > 0) && loopCount < 500) {
+      loopCount++;
+      
+      // 1. Process Macrotask
+      if (this.macrotaskQueue.length > 0) {
+        const task = this.macrotaskQueue.shift();
+        
+        if (task.type === 'script') {
+          this.evaluate(task.node, task.env, 'main()');
+        } else if (task.type === 'Macrotask (setTimeout)') {
+          this.callStack.push({ name: 'setTimeout cb()', state: 'running' });
+          this.recordSnapshot(task.callback.node || { loc: { start: { line: 1 } } }, 'setTimeout callback');
+          this.evaluateCall(task.callback, [], task.env, 'setTimeout cb()');
+          this.callStack.pop();
+          this.recordSnapshot({ loc: { start: { line: null } } }, 'Global');
+        }
+      }
+
+      // 2. Process Microtasks
+      while (this.microtaskQueue.length > 0 && loopCount < 500) {
+         loopCount++;
+         const micro = this.microtaskQueue.shift();
+         this.callStack.push({ name: 'Promise.then()', state: 'running' });
+         this.recordSnapshot(micro.callback.node || { loc: { start: { line: 1 } } }, 'Promise callback');
+         this.evaluateCall(micro.callback, [micro.arg], micro.callback.env, 'Promise.then()');
+         this.callStack.pop();
+         this.recordSnapshot({ loc: { start: { line: null } } }, 'Global');
+      }
+
+      // 3. Move Web APIs to Macrotask Queue (simulate time advancing to empty WebAPIs)
+      if (this.webAPIs.length > 0 && this.macrotaskQueue.length === 0 && this.microtaskQueue.length === 0) {
+         this.currentTime += 1;
+         const readyApis = this.webAPIs.filter(api => this.currentTime >= api.triggerTime);
+         this.webAPIs = this.webAPIs.filter(api => this.currentTime < api.triggerTime);
+         
+         readyApis.forEach(api => {
+           this.macrotaskQueue.push({
+             type: 'Macrotask (setTimeout)',
+             name: 'setTimeout callback',
+             callback: api.callback,
+             env: this.globalEnv
+           });
+         });
+         
+         // Record state when WEB API moves to Queue
+         if (readyApis.length > 0) {
+            this.recordSnapshot({ loc: { start: { line: null } } }, 'Event Loop Callback');
+         }
+      }
+    }
+    
+    this.callStack.pop();
+    this.recordSnapshot({ loc: { start: { line: null } } }, 'Done');
+
+    return this.snapshots;
+  }
+
+  evaluate(node, env, contextName) {
+    if (!node) return null;
+    
+    // Only record statements and declarations
+    if (node.type.includes('Statement') || node.type.includes('Declaration') || node.type === 'CallExpression') {
+       if (node.type !== 'BlockStatement' && node.type !== 'Program') {
+         this.recordSnapshot(node, contextName);
+       }
+    }
+
+    switch (node.type) {
+      case 'Program':
+      case 'BlockStatement':
+        let lastValue = undefined;
+        for (const stmt of node.body) {
+          lastValue = this.evaluate(stmt, env, contextName);
+        }
+        return lastValue;
+        
+      case 'VariableDeclaration':
+        for (const decl of node.declarations) {
+          const val = decl.init ? this.evaluate(decl.init, env, contextName) : undefined;
+          env.set(decl.id.name, val);
+        }
+        return;
+        
+      case 'ExpressionStatement':
+        return this.evaluate(node.expression, env, contextName);
+        
+      case 'CallExpression':
+        const callee = this.evaluate(node.callee, env, contextName);
+        const args = node.arguments.map(arg => this.evaluate(arg, env, contextName));
+        
+        if (typeof callee === 'function') {
+           return callee(...args);
+        } else if (callee && callee.type === 'Function') {
+           this.callStack.push({ name: callee.name || 'anonymous()', state: 'running' });
+           this.recordSnapshot(node, callee.name || 'anonymous()');
+           const res = this.evaluateCall(callee, args, env, callee.name || 'anonymous()');
+           this.callStack.pop();
+           this.recordSnapshot(node, contextName);
+           return res;
+        } else if (callee && callee.log) {
+           return callee.log(...args); // Console
+        }
+        return;
+        
+      case 'MemberExpression':
+        const obj = this.evaluate(node.object, env, contextName);
+        const propName = node.property.name;
+        if (obj && obj[propName]) return obj[propName];
+        if (obj === this.globalEnv.get('console')) return this.globalEnv.get('console')[propName];
+        return obj;
+        
+      case 'Identifier':
+        return env.has(node.name) ? env.get(node.name) : undefined;
+        
+      case 'Literal':
+        return { type: typeof node.value, value: node.value };
+        
+      case 'ArrowFunctionExpression':
+      case 'FunctionExpression':
+         return {
+           type: 'Function',
+           name: node.id ? node.id.name : null,
+           params: node.params,
+           body: node.body,
+           env: env,
+           node: node
+         };
+         
+      case 'FunctionDeclaration':
+         const fn = {
+           type: 'Function',
+           name: node.id.name,
+           params: node.params,
+           body: node.body,
+           env: env,
+           node: node
+         };
+         env.set(node.id.name, fn);
+         return fn;
+         
+      default:
+        return undefined;
+    }
+  }
+  
+  evaluateCall(fnDef, args, parentEnv, contextName) {
+     const callEnv = new Environment(fnDef.env);
+     fnDef.params.forEach((param, i) => {
+       callEnv.set(param.name, args[i]);
+     });
+     
+     if (fnDef.body.type === 'BlockStatement') {
+       return this.evaluate(fnDef.body, callEnv, contextName);
+     } else {
+       return this.evaluate(fnDef.body, callEnv, contextName); // Arrow func implicit return
+     }
+  }
+}
