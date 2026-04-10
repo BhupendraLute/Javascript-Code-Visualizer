@@ -52,6 +52,14 @@ export class CodeVisualizerEngine {
         return {
           type: 'Promise',
           value: val,
+          internalThen: (cb) => {
+             this.microtaskQueue.push({
+               type: 'Microtask (await resume)',
+               name: 'async resume',
+               continuation: () => cb(val),
+               env: this.globalEnv
+             });
+          },
           then: (cb) => {
              this.microtaskQueue.push({
                type: 'Microtask (then)',
@@ -67,11 +75,21 @@ export class CodeVisualizerEngine {
     this.globalEnv.set('fetch', (urlArgs) => {
       return {
         type: 'Promise',
+        internalThen: (cb) => {
+          const id = this.nextTimerId++;
+          this.webAPIs.push({
+            id,
+            name: 'fetch()',
+            triggerTime: this.currentTime + 10,
+            isFetch: true,
+            continuation: () => cb({ status: 200, json: () => ({ message: 'Success' }) })
+          });
+        },
         then: (cb) => {
           const id = this.nextTimerId++;
           this.webAPIs.push({
             id,
-            name: `fetch()`,
+            name: 'fetch()',
             triggerTime: this.currentTime + 10, // Simulated network delay
             isFetch: true,
             callback: cb
@@ -169,6 +187,52 @@ export class CodeVisualizerEngine {
      return this.snapshots;
   }
 
+  pumpGenerator(iterator, env, contextName, onComplete, valueToInject) {
+      let result;
+      try {
+          result = iterator.next(valueToInject); 
+      } catch(e) {
+          console.error('Interpreter Error:', e);
+          if (onComplete) onComplete();
+          return;
+      }
+      
+      if (result.done) {
+          if (onComplete) onComplete();
+          return result.value;
+      }
+      
+      const val = result.value;
+      if (val && val.suspend) {
+          // Pop the current top-level context from the stack when suspending
+          this.callStack.pop();
+          this.recordSnapshot({ loc: { start: { line: null } } }, `Suspended: ${contextName}`, env);
+          
+          if (val.promise && val.promise.internalThen) {
+              val.promise.internalThen((resolvedValue) => {
+                  this.microtaskQueue.push({
+                      type: 'Microtask (await resume)',
+                      name: `Resume: ${contextName}`,
+                      continuation: () => {
+                          // Push it back on resume
+                          this.callStack.push({ name: contextName, state: 'running' });
+                          this.recordSnapshot({ loc: { start: { line: null } } }, `Resumed ${contextName}`, env);
+                          this.pumpGenerator(iterator, env, contextName, onComplete, resolvedValue);
+                      },
+                      env: env
+                  });
+              });
+          } else {
+             // Not a mock promise, just resume immediately
+             setTimeout(() => {
+                 this.callStack.push({ name: contextName, state: 'running' });
+                 this.recordSnapshot({ loc: { start: { line: null } } }, `Resuming ${contextName}`, env);
+                 this.pumpGenerator(iterator, env, contextName, onComplete, val.promise);
+             }, 0);
+          }
+      }
+  }
+
   runLoop() {
     let loopCount = 0;
 
@@ -181,13 +245,21 @@ export class CodeVisualizerEngine {
         const task = this.macrotaskQueue.shift();
         
         if (task.type === 'script') {
-          this.evaluate(task.node, task.env, 'main()');
+          const iter = this.evaluate(task.node, task.env, 'main()');
+          this.pumpGenerator(iter, task.env, 'main()', () => {
+              if (this.callStack.length > 0 && this.callStack[this.callStack.length - 1].name === 'main()') {
+                  this.callStack.pop();
+                  this.recordSnapshot({ loc: { start: { line: null } } }, 'Script Finished', this.globalEnv);
+              }
+          });
         } else if (task.type === 'Macrotask (setTimeout)' || task.type === 'Macrotask (DOM Event)') {
           this.callStack.push({ name: task.name || 'callback', state: 'running' });
           this.recordSnapshot(task.callback.node || { loc: { start: { line: 1 } } }, task.name, task.env);
-          this.evaluateCall(task.callback, [], task.env, task.name);
-          this.callStack.pop();
-          this.recordSnapshot({ loc: { start: { line: null } } }, 'Global', this.globalEnv);
+          const iter = this.evaluateCall(task.callback, [], task.env, task.name);
+          this.pumpGenerator(iter, task.env, task.name, () => {
+             this.callStack.pop();
+             this.recordSnapshot({ loc: { start: { line: null } } }, 'Global', this.globalEnv);
+          });
         }
       }
 
@@ -195,11 +267,20 @@ export class CodeVisualizerEngine {
       while (this.microtaskQueue.length > 0 && loopCount < 500) {
          loopCount++;
          const micro = this.microtaskQueue.shift();
-         this.callStack.push({ name: 'Promise.then()', state: 'running' });
-         this.recordSnapshot(micro.callback.node || { loc: { start: { line: 1 } } }, 'Promise callback', micro.callback.env);
-         this.evaluateCall(micro.callback, [micro.arg], micro.callback.env, 'Promise.then()');
-         this.callStack.pop();
-         this.recordSnapshot({ loc: { start: { line: null } } }, 'Global', this.globalEnv);
+         this.callStack.push({ name: micro.name || 'Promise.then()', state: 'running' });
+         
+         if (micro.continuation) {
+            this.recordSnapshot({ loc: { start: { line: null } } }, micro.name || 'Resuming async', micro.env || this.globalEnv);
+            micro.continuation();
+            // Note: pumpGenerator handles its own callStack pop/record in suspension or onComplete
+         } else {
+            this.recordSnapshot(micro.callback.node || { loc: { start: { line: 1 } } }, 'Promise callback', micro.callback.env);
+            const iter = this.evaluateCall(micro.callback, [micro.arg], micro.callback.env, 'Promise.then()');
+            this.pumpGenerator(iter, micro.callback.env, 'Promise.then()', () => {
+               this.callStack.pop();
+               this.recordSnapshot({ loc: { start: { line: null } } }, 'Global', this.globalEnv);
+            });
+         }
       }
 
       // 3. Move Web APIs to Macrotask Queue (simulate time advancing to empty WebAPIs)
@@ -210,12 +291,21 @@ export class CodeVisualizerEngine {
          
          readyApis.forEach(api => {
            if (api.isFetch) {
-             this.microtaskQueue.push({
-               type: 'Microtask (fetch)',
-               name: 'fetch callback',
-               callback: api.callback,
-               env: this.globalEnv
-             });
+             if (api.continuation) {
+                this.microtaskQueue.push({
+                   type: 'Microtask (fetch resume)',
+                   name: 'async fetch resume',
+                   continuation: api.continuation,
+                   env: this.globalEnv
+                });
+             } else {
+                this.microtaskQueue.push({
+                  type: 'Microtask (fetch)',
+                  name: 'fetch callback',
+                  callback: api.callback,
+                  env: this.globalEnv
+                });
+             }
            } else {
              this.macrotaskQueue.push({
                type: 'Macrotask (setTimeout)',
@@ -232,18 +322,12 @@ export class CodeVisualizerEngine {
          }
       }
     }
-    
-    // Only pop main if we just finished the script task, otherwise keep the stack empty.
-    if (this.callStack.length > 0 && this.callStack[this.callStack.length - 1].name === 'main()') {
-      this.callStack.pop();
-    }
-    
     this.recordSnapshot({ loc: { start: { line: null } } }, 'Idle', this.globalEnv);
 
     return this.snapshots;
   }
 
-  evaluate(node, env, contextName) {
+  *evaluate(node, env, contextName) {
     if (!node) return null;
     
     // Only record statements and declarations
@@ -258,40 +342,77 @@ export class CodeVisualizerEngine {
       case 'BlockStatement':
         let lastValue = undefined;
         for (const stmt of node.body) {
-          lastValue = this.evaluate(stmt, env, contextName);
+          lastValue = yield* this.evaluate(stmt, env, contextName);
         }
         return lastValue;
         
       case 'VariableDeclaration':
         for (const decl of node.declarations) {
-          const val = decl.init ? this.evaluate(decl.init, env, contextName) : undefined;
+          const val = decl.init ? yield* this.evaluate(decl.init, env, contextName) : undefined;
           env.set(decl.id.name, val);
         }
         return;
         
       case 'ExpressionStatement':
-        return this.evaluate(node.expression, env, contextName);
+        return yield* this.evaluate(node.expression, env, contextName);
+        
+      case 'AwaitExpression':
+        const p = yield* this.evaluate(node.argument, env, contextName);
+        return yield { suspend: true, promise: p };
         
       case 'CallExpression':
-        const callee = this.evaluate(node.callee, env, contextName);
-        const args = node.arguments.map(arg => this.evaluate(arg, env, contextName));
+        const callee = yield* this.evaluate(node.callee, env, contextName);
+        const args = [];
+        for (const arg of node.arguments) {
+            args.push(yield* this.evaluate(arg, env, contextName));
+        }
         
         if (typeof callee === 'function') {
            return callee(...args);
         } else if (callee && callee.type === 'Function') {
-           this.callStack.push({ name: callee.name || 'anonymous()', state: 'running' });
-           this.recordSnapshot(node, callee.name || 'anonymous()');
-           const res = this.evaluateCall(callee, args, env, callee.name || 'anonymous()');
-           this.callStack.pop();
-           this.recordSnapshot(node, contextName);
-           return res;
+           const funcName = callee.name || 'anonymous()';
+           
+           if (callee.node && callee.node.async) {
+               this.callStack.push({ name: funcName, state: 'running' });
+               this.recordSnapshot(node, funcName, env);
+               const iterator = this.evaluateCall(callee, args, env, funcName);
+               
+               this.pumpGenerator(iterator, env, funcName, () => {
+                   if (this.callStack.length > 0 && this.callStack[this.callStack.length - 1].name === funcName) {
+                       this.callStack.pop();
+                       this.recordSnapshot({ loc: { start: { line: null } } }, `Finished ${funcName}`, env);
+                   }
+               });
+               
+               return this.globalEnv.get('Promise').resolve({});
+           } else {
+               this.callStack.push({ name: funcName, state: 'running' });
+               this.recordSnapshot(node, funcName, env);
+               
+               const iterator = this.evaluateCall(callee, args, env, funcName);
+               let res = iterator.next();
+               while (!res.done) {
+                   if (res.value && res.value.suspend) {
+                       this.callStack.pop();
+                       const injectedValue = yield res.value;
+                       this.callStack.push({ name: funcName, state: 'running' });
+                       res = iterator.next(injectedValue);
+                   } else {
+                       res = iterator.next();
+                   }
+               }
+               
+               this.callStack.pop();
+               this.recordSnapshot(node, contextName, env);
+               return res.value;
+           }
         } else if (callee && callee.log) {
            return callee.log(...args); // Console
         }
         return;
         
       case 'MemberExpression':
-        const obj = this.evaluate(node.object, env, contextName);
+        const obj = yield* this.evaluate(node.object, env, contextName);
         const propName = node.property.name;
         if (obj && obj[propName]) return obj[propName];
         if (obj === this.globalEnv.get('console')) return this.globalEnv.get('console')[propName];
@@ -331,16 +452,16 @@ export class CodeVisualizerEngine {
     }
   }
   
-  evaluateCall(fnDef, args, parentEnv, contextName) {
+  *evaluateCall(fnDef, args, parentEnv, contextName) {
      const callEnv = new Environment(fnDef.env);
      fnDef.params.forEach((param, i) => {
        callEnv.set(param.name, args[i]);
      });
      
      if (fnDef.body.type === 'BlockStatement') {
-       return this.evaluate(fnDef.body, callEnv, contextName);
+       return yield* this.evaluate(fnDef.body, callEnv, contextName);
      } else {
-       return this.evaluate(fnDef.body, callEnv, contextName); // Arrow func implicit return
+       return yield* this.evaluate(fnDef.body, callEnv, contextName); // Arrow func implicit return
      }
   }
 }
