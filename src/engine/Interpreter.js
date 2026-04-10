@@ -100,7 +100,34 @@ export class CodeVisualizerEngine {
     });
   }
 
-  recordSnapshot(node, contextName = 'Global') {
+  serializeEnv(env) {
+    const scopes = [];
+    let current = env;
+    while (current) {
+      const scopeData = {};
+      for (const [k, v] of current.vars.entries()) {
+         if (typeof v === 'function') scopeData[k] = '[Native Function]';
+         else if (v && v.type === 'DOMElement') scopeData[k] = `[DOM ${v.id}]`;
+         else if (v && v.type === 'Function') scopeData[k] = `[Function: ${v.name}]`;
+         else if (v && v.type === 'Promise') scopeData[k] = '[Promise]';
+         else if (typeof v === 'object' && v !== null && v.value !== undefined) scopeData[k] = v.value;
+         else scopeData[k] = String(v);
+      }
+      
+      let scopeName = 'Closure';
+      if (current === this.globalEnv) scopeName = 'Global';
+      else if (scopes.length === 0) scopeName = 'Local';
+      
+      scopes.push({
+         name: scopeName,
+         vars: scopeData
+      });
+      current = current.parent;
+    }
+    return scopes;
+  }
+
+  recordSnapshot(node, contextName = 'Global', env = this.globalEnv) {
     if (!node) return;
     this.snapshots.push({
       line: node.loc ? node.loc.start.line : null,
@@ -109,6 +136,7 @@ export class CodeVisualizerEngine {
       macrotaskQueue: JSON.parse(JSON.stringify(this.macrotaskQueue.map(m => m.name || m.type))),
       microtaskQueue: JSON.parse(JSON.stringify(this.microtaskQueue.map(m => m.name || m.type))),
       console: [...this.consoleLogs],
+      memory: this.serializeEnv(env),
       contextName
     });
   }
@@ -135,7 +163,7 @@ export class CodeVisualizerEngine {
          });
        });
        
-       this.recordSnapshot({ loc: { start: { line: null } } }, `Triggered ${eventName}`);
+       this.recordSnapshot({ loc: { start: { line: null } } }, `Triggered ${eventName}`, this.globalEnv);
        return this.runLoop(); // Process the new queues
      }
      return this.snapshots;
@@ -156,10 +184,10 @@ export class CodeVisualizerEngine {
           this.evaluate(task.node, task.env, 'main()');
         } else if (task.type === 'Macrotask (setTimeout)' || task.type === 'Macrotask (DOM Event)') {
           this.callStack.push({ name: task.name || 'callback', state: 'running' });
-          this.recordSnapshot(task.callback.node || { loc: { start: { line: 1 } } }, task.name);
+          this.recordSnapshot(task.callback.node || { loc: { start: { line: 1 } } }, task.name, task.env);
           this.evaluateCall(task.callback, [], task.env, task.name);
           this.callStack.pop();
-          this.recordSnapshot({ loc: { start: { line: null } } }, 'Global');
+          this.recordSnapshot({ loc: { start: { line: null } } }, 'Global', this.globalEnv);
         }
       }
 
@@ -168,10 +196,10 @@ export class CodeVisualizerEngine {
          loopCount++;
          const micro = this.microtaskQueue.shift();
          this.callStack.push({ name: 'Promise.then()', state: 'running' });
-         this.recordSnapshot(micro.callback.node || { loc: { start: { line: 1 } } }, 'Promise callback');
+         this.recordSnapshot(micro.callback.node || { loc: { start: { line: 1 } } }, 'Promise callback', micro.callback.env);
          this.evaluateCall(micro.callback, [micro.arg], micro.callback.env, 'Promise.then()');
          this.callStack.pop();
-         this.recordSnapshot({ loc: { start: { line: null } } }, 'Global');
+         this.recordSnapshot({ loc: { start: { line: null } } }, 'Global', this.globalEnv);
       }
 
       // 3. Move Web APIs to Macrotask Queue (simulate time advancing to empty WebAPIs)
@@ -200,7 +228,7 @@ export class CodeVisualizerEngine {
          
          // Record state when WEB API moves to Queue
          if (readyApis.length > 0) {
-            this.recordSnapshot({ loc: { start: { line: null } } }, 'Event Loop Callback');
+            this.recordSnapshot({ loc: { start: { line: null } } }, 'Event Loop Callback', this.globalEnv);
          }
       }
     }
@@ -210,7 +238,7 @@ export class CodeVisualizerEngine {
       this.callStack.pop();
     }
     
-    this.recordSnapshot({ loc: { start: { line: null } } }, 'Idle');
+    this.recordSnapshot({ loc: { start: { line: null } } }, 'Idle', this.globalEnv);
 
     return this.snapshots;
   }
@@ -221,7 +249,7 @@ export class CodeVisualizerEngine {
     // Only record statements and declarations
     if (node.type.includes('Statement') || node.type.includes('Declaration') || node.type === 'CallExpression') {
        if (node.type !== 'BlockStatement' && node.type !== 'Program') {
-         this.recordSnapshot(node, contextName);
+         this.recordSnapshot(node, contextName, env);
        }
     }
 
