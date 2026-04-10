@@ -42,9 +42,15 @@ body {
 .header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-bottom: 10px;
+  justify-content: space-between;
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--border-color);
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .header h1 {
@@ -54,6 +60,41 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+
+.playground-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background-color: rgba(255, 255, 255, 0.03);
+  padding: 8px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+
+.playground-selector:hover {
+  background-color: rgba(255, 255, 255, 0.07);
+  border-color: rgba(96, 165, 250, 0.4);
+  transform: translateY(-1px);
+}
+
+.example-select {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  font-family: 'Inter', sans-serif;
+}
+
+.example-select option {
+  background-color: var(--panel-bg);
+  color: var(--text-main);
+  padding: 10px;
 }
 
 .main-content {
