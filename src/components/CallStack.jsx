@@ -10,7 +10,7 @@ export function CallStack({ callStack }) {
       </div>
       <div className="panel-content stack-container">
         <AnimatePresence>
-          {callStack?.map((frame, idx) => (
+          {[...(callStack || [])].reverse().map((frame, idx) => (
             <motion.div
               key={`${frame.name}-${idx}`}
               initial={{ opacity: 0, y: -20, scale: 0.95 }}
@@ -26,7 +26,7 @@ export function CallStack({ callStack }) {
               <span className="func-name">{frame.name}</span>
               <span className="status-dot pulsing"></span>
             </motion.div>
-          )).reverse()}
+          ))}
         </AnimatePresence>
         {!callStack || callStack.length === 0 ? (
           <div className="empty-state">Stack is empty</div>

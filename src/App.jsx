@@ -4,15 +4,29 @@ import { CodeVisualizerEngine } from './engine/Interpreter';
 import { Code2 } from 'lucide-react';
 import './index.css';
 
-const DEFAULT_CODE = `const globalVar = 'I am global';
-function outer(outerArg) {
-  const closedOver = 'secret';
-  return function inner(innerArg) {
-     console.log(globalVar, outerArg, closedOver, innerArg);
-  }
+const DEFAULT_CODE = `console.log('1. Script Start');
+
+let dataReady = false;
+
+// We use an async IIFE or basic fetch to avoid complex async generator promise returns
+// because the engine focuses on primitive awaits.
+async function init() {
+  console.log('3. Inside async init');
+  
+  // Await fetch (simulated 10ms)
+  const res = await fetch('https://api.example.com/data');
+  console.log('5. Data received:', res.status);
+  
+  dataReady = true;
 }
-const fn = outer('arg1');
-fn('arg2');
+
+setTimeout(() => {
+  console.log('6. setTimeout callback - dataReady:', dataReady);
+}, 0);
+
+init();
+
+console.log('2. Script End');
 `;
 
 function App() {
