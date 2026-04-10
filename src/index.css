@@ -52,6 +52,7 @@ body {
   font-weight: 600;
   background: linear-gradient(90deg, #60a5fa, #a78bfa);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -81,7 +82,8 @@ body {
 
 /* Editor component */
 .editor-container {
-  flex: 1;
+  flex: 2;
+  min-height: 0;
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--border-color);
@@ -363,6 +365,11 @@ body {
 }
 
 /* Console View */
+.console-panel {
+  flex: 1;
+  min-height: 0;
+}
+
 .console-content {
   background-color: #000;
   font-family: 'JetBrains Mono', monospace;
