@@ -13,6 +13,7 @@ export class CodeVisualizerEngine {
     this.globalEnv = new Environment();
     this.nextTimerId = 1;
     this.currentTime = 0;
+    this.eventListeners = new Map();
 
     this.setupBuiltIns();
 
@@ -62,6 +63,41 @@ export class CodeVisualizerEngine {
         };
       }
     });
+
+    this.globalEnv.set('fetch', (urlArgs) => {
+      return {
+        type: 'Promise',
+        then: (cb) => {
+          const id = this.nextTimerId++;
+          this.webAPIs.push({
+            id,
+            name: `fetch()`,
+            triggerTime: this.currentTime + 10, // Simulated network delay
+            isFetch: true,
+            callback: cb
+          });
+          return this.globalEnv.get('Promise').resolve({}); 
+        }
+      };
+    });
+
+    this.globalEnv.set('document', {
+      getElementById: (idArg) => {
+        const elementId = idArg?.value || idArg;
+        return {
+          type: 'DOMElement',
+          id: elementId,
+          addEventListener: (eventArg, cb) => {
+            const eventName = eventArg?.value || eventArg;
+            const key = `${elementId}-${eventName}`;
+            if (!this.eventListeners.has(key)) {
+               this.eventListeners.set(key, []);
+            }
+            this.eventListeners.get(key).push(cb);
+          }
+        };
+      }
+    });
   }
 
   recordSnapshot(node, contextName = 'Global') {
@@ -83,6 +119,29 @@ export class CodeVisualizerEngine {
     this.callStack.push({ name: 'main()', state: 'running' });
     this.macrotaskQueue.push({ type: 'script', name: 'script', node: this.ast, env: this.globalEnv });
 
+    return this.runLoop();
+  }
+
+  triggerDOMEvent(elementId, eventName) {
+     const key = `${elementId}-${eventName}`;
+     const listeners = this.eventListeners.get(key);
+     if (listeners && listeners.length > 0) {
+       listeners.forEach((cb) => {
+         this.macrotaskQueue.push({
+            type: 'Macrotask (DOM Event)',
+            name: `Event: ${eventName}`,
+            callback: cb,
+            env: this.globalEnv
+         });
+       });
+       
+       this.recordSnapshot({ loc: { start: { line: null } } }, `Triggered ${eventName}`);
+       return this.runLoop(); // Process the new queues
+     }
+     return this.snapshots;
+  }
+
+  runLoop() {
     let loopCount = 0;
 
     // Event Loop Simulation
@@ -95,10 +154,10 @@ export class CodeVisualizerEngine {
         
         if (task.type === 'script') {
           this.evaluate(task.node, task.env, 'main()');
-        } else if (task.type === 'Macrotask (setTimeout)') {
-          this.callStack.push({ name: 'setTimeout cb()', state: 'running' });
-          this.recordSnapshot(task.callback.node || { loc: { start: { line: 1 } } }, 'setTimeout callback');
-          this.evaluateCall(task.callback, [], task.env, 'setTimeout cb()');
+        } else if (task.type === 'Macrotask (setTimeout)' || task.type === 'Macrotask (DOM Event)') {
+          this.callStack.push({ name: task.name || 'callback', state: 'running' });
+          this.recordSnapshot(task.callback.node || { loc: { start: { line: 1 } } }, task.name);
+          this.evaluateCall(task.callback, [], task.env, task.name);
           this.callStack.pop();
           this.recordSnapshot({ loc: { start: { line: null } } }, 'Global');
         }
@@ -122,12 +181,21 @@ export class CodeVisualizerEngine {
          this.webAPIs = this.webAPIs.filter(api => this.currentTime < api.triggerTime);
          
          readyApis.forEach(api => {
-           this.macrotaskQueue.push({
-             type: 'Macrotask (setTimeout)',
-             name: 'setTimeout callback',
-             callback: api.callback,
-             env: this.globalEnv
-           });
+           if (api.isFetch) {
+             this.microtaskQueue.push({
+               type: 'Microtask (fetch)',
+               name: 'fetch callback',
+               callback: api.callback,
+               env: this.globalEnv
+             });
+           } else {
+             this.macrotaskQueue.push({
+               type: 'Macrotask (setTimeout)',
+               name: 'setTimeout callback',
+               callback: api.callback,
+               env: this.globalEnv
+             });
+           }
          });
          
          // Record state when WEB API moves to Queue
@@ -137,8 +205,12 @@ export class CodeVisualizerEngine {
       }
     }
     
-    this.callStack.pop();
-    this.recordSnapshot({ loc: { start: { line: null } } }, 'Done');
+    // Only pop main if we just finished the script task, otherwise keep the stack empty.
+    if (this.callStack.length > 0 && this.callStack[this.callStack.length - 1].name === 'main()') {
+      this.callStack.pop();
+    }
+    
+    this.recordSnapshot({ loc: { start: { line: null } } }, 'Idle');
 
     return this.snapshots;
   }

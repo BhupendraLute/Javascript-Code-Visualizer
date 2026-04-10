@@ -1,17 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { EditorView, CallStack, WebAPIs, TaskQueues, Controls, ConsoleView } from './components';
+import React, { useState, useRef } from 'react';
+import { EditorView, CallStack, WebAPIs, TaskQueues, Controls, ConsoleView, DOMView } from './components';
 import { CodeVisualizerEngine } from './engine/Interpreter';
 import { Code2 } from 'lucide-react';
 import './index.css';
 
 const DEFAULT_CODE = `console.log('1. Script start');
 
-setTimeout(() => {
-  console.log('4. setTimeout callback');
-}, 0);
+// Simulate DOM interaction
+const btn = document.getElementById('btn');
+btn.addEventListener('click', () => {
+  console.log('Button Clicked! (DOM Event)');
+});
 
-Promise.resolve().then(() => {
-  console.log('3. Promise then');
+fetch('https://api.example.com/data').then(() => {
+  console.log('Fetch request completed!');
 });
 
 console.log('2. Script end');
@@ -22,19 +24,27 @@ function App() {
   const [snapshots, setSnapshots] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
+  const engineRef = useRef(null);
 
   const handleRun = () => {
     setIsRunning(true);
     try {
-      const engine = new CodeVisualizerEngine(code);
-      const generatedSnapshots = engine.run();
-      setSnapshots(generatedSnapshots);
+      engineRef.current = new CodeVisualizerEngine(code);
+      const generatedSnapshots = engineRef.current.run();
+      setSnapshots([...generatedSnapshots]);
       setCurrentIndex(0);
     } catch (e) {
       console.error(e);
       alert('Error parsing or evaluating code. Please check console.');
     }
     setIsRunning(false);
+  };
+
+  const handleSimulateClick = (id, event) => {
+    if (engineRef.current && snapshots.length > 0) {
+       const newSnapshots = engineRef.current.triggerDOMEvent(id, event);
+       setSnapshots([...newSnapshots]);
+    }
   };
 
   const currentSnapshot = snapshots[currentIndex] || {
@@ -95,6 +105,7 @@ function App() {
         <div className="right-panel">
           <CallStack callStack={currentSnapshot.callStack} />
           <WebAPIs apis={currentSnapshot.webAPIs} />
+          <DOMView onSimulateClick={handleSimulateClick} />
           <TaskQueues 
             macrotasks={currentSnapshot.macrotaskQueue} 
             microtasks={currentSnapshot.microtaskQueue} 
